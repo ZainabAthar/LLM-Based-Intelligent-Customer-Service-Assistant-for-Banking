@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Uploaded / temp files
+tmp/
+temp/
+uploads/
+
+# Generated outputs
+output/
+outputs/
+results/
+*.jsonl
+
+# PDF / document samples (optional — remove if you want to commit test docs)
+sample_data/
+*.pdf
+
+# Local SQLite / DB files
+*.db
+*.sqlite3
+
+# Uvicorn / FastAPI
+uvicorn*.log

@@ -84,7 +84,7 @@ def find_best_header_row(file_path, sheet_name):
 
 def process_bank_data_robust(file_path):
     if not os.path.exists(file_path):
-        print(f"❌ Error: File {file_path} not found.")
+        print(f" Error: File {file_path} not found.")
         return None
 
     xl = pd.ExcelFile(file_path)
@@ -92,7 +92,7 @@ def process_bank_data_robust(file_path):
     seen_hashes = set()
 
     for sheet_name in xl.sheet_names:
-        print(f"🔍 Robustly parsing sheet: {sheet_name}...")
+        print(f"Robustly parsing sheet: {sheet_name}...")
         
         # 1. Find the best header row
         header_row = find_best_header_row(file_path, sheet_name)
@@ -106,7 +106,7 @@ def process_bank_data_robust(file_path):
             df.columns = [str(c).strip() for c in df.columns]
             df.columns = [c if "Unnamed" not in c else f"Info_{i}" for i, c in enumerate(df.columns)]
         except Exception as e:
-            print(f"⚠️ Error parsing {sheet_name}: {e}")
+            print(f" Error parsing {sheet_name}: {e}")
             continue
 
         for idx, row in df.iterrows():
@@ -181,8 +181,8 @@ def save_output(records, output_path_jsonl, output_path_json):
     with open(output_path_json, 'w', encoding='utf-8') as f:
         json.dump(records, f, indent=2, ensure_ascii=False)
         
-    print(f"✅ Success! Generated unique records: {len(records)}")
-    print(f"📂 Saved to: {output_path_jsonl} and {output_path_json}")
+    print(f" Success! Generated unique records: {len(records)}")
+    print(f" Saved to: {output_path_jsonl} and {output_path_json}")
 
 if __name__ == "__main__":
     INPUT_FILE = "product_info.xlsx"
