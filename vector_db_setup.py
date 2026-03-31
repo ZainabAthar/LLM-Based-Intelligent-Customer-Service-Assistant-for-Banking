@@ -6,9 +6,9 @@ from chromadb.utils import embedding_functions
 # --- Configuration ---
 # Use an open-source, local embedding model
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-PERSIST_DIRECTORY = "vector_store_updated"
+PERSIST_DIRECTORY = "vector_store_new"
 COLLECTION_NAME = "bank_knowledge_base"
-INPUT_FILE = "preprocessed_data/bank_data_advanced_qa.jsonl" # Use the deduplicated JSONL
+INPUT_FILE = "preprocessed_data/enriched_bank_data.jsonl" # Use the deduplicated JSONL
 
 def setup_vector_db():
     """Initializes ChromaDB and indexes the preprocessed bank data."""
