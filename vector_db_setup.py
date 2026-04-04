@@ -8,7 +8,7 @@ from chromadb.utils import embedding_functions
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 PERSIST_DIRECTORY = "vector_store_new"
 COLLECTION_NAME = "bank_knowledge_base"
-INPUT_FILE = "preprocessed_data/bank_data_master.jsonl" # Use the master JSONL
+INPUT_FILE = "preprocessed_data/bank_data_master_test.jsonl" # Use the master JSONL
 
 def setup_vector_db():
     """Initializes ChromaDB and indexes the preprocessed bank data."""
