@@ -1,0 +1,4 @@
+lora_bank_model_qwenx/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
