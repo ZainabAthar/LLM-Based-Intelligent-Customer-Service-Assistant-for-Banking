@@ -3,6 +3,8 @@ import torch
 import warnings
 import chromadb
 import logging
+import uuid
+import chromadb.utils.embedding_functions as ef
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TextIteratorStreamer
 from peft import PeftModel
@@ -53,6 +55,12 @@ KEYWORD_TO_SHEET = {
     "sahar finance":"NSF","imarat":"NIF","ujala":"NUF","flour mill":"NFMF",
     "fauri":"NFBF","rice finance":"NRF","hunarmand":"NHF","nust life":"Nust Life",
     "efu life":"EFU Life","jubilee":"Jubilee Life","remittance":"HOME REMITTANCE",
+    # Topic detection for broad banking functions
+    "limit":"Funds Transfer / RAAST","transfer":"Funds Transfer / RAAST",
+    "raast":"Funds Transfer / RAAST","ibft":"Funds Transfer / RAAST",
+    "bill":"App Features / Functionalities","utilit":"App Features / Functionalities",
+    "biometric":"App Features / Functionalities","mpin":"App Features / Functionalities",
+    "atm":"ATM","debit card":"ATM","card":"ATM",
 }
 
 
@@ -120,8 +128,15 @@ class BankRAGAssistant:
         print("  LoRA adapter applied.")
 
         # ── 4. Vector DB ──────────────────────────────────────────────
-        self.db_client  = chromadb.PersistentClient(path=self.db_dir)
-        self.collection = self.db_client.get_collection(name=COLLECTION)
+        self.db_client = chromadb.PersistentClient(path=self.db_dir)
+        
+        # Consistent embedding function (MUST match vector_db_setup.py)
+        self.emb_fn = ef.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        
+        self.collection = self.db_client.get_collection(
+            name=COLLECTION, 
+            embedding_function=self.emb_fn
+        )
         print(f"  Vector DB: {self.collection.count()} records loaded.")
 
         # ── 5. Retrieval models ───────────────────────────────────────
@@ -129,6 +144,53 @@ class BankRAGAssistant:
         self.reranker    = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
 
         print("\nSystem Ready! Type your question.\n")
+
+    # ──────────────────────────────────────────────────────────────────
+    #  Document Ingestion (for user-uploaded files)
+    # ──────────────────────────────────────────────────────────────────
+    def ingest_records(self, records: list, session_id: str = "default"):
+        """
+        Adds parsed records to the ChromaDB collection tagged with session_id.
+        """
+        if not records:
+            return 0
+
+        ids      = []
+        metas    = []
+        docs     = []
+        embeddings = []
+
+        for rec in records:
+            # unique ID to avoid collisions across sessions if same doc uploaded
+            rid = f"{session_id}_{rec['hash_id']}"
+            ids.append(rid)
+            
+            # Ensure metadata has the session_id and sheet type
+            meta = rec.get("metadata", {})
+            meta["session_id"] = session_id
+            meta["sheet"]      = "Uploaded"
+            metas.append(meta)
+            
+            docs.append(rec["content"])
+
+        # Let Chroma handle embeddings internally using self.emb_fn
+        self.collection.add(
+            ids=ids,
+            metadatas=metas,
+            documents=docs
+        )
+        print(f"  Ingested {len(records)} segments for session: {session_id}")
+        return len(records)
+
+    def clear_session_records(self, session_id: str):
+        """Removes all 'Uploaded' records for a specific session."""
+        try:
+            self.collection.delete(where={"session_id": session_id})
+            print(f"  Cleared records for session: {session_id}")
+            return True
+        except Exception as e:
+            print(f"  Error clearing session records: {e}")
+            return False
 
     # ──────────────────────────────────────────────────────────────────
     #  Account Detection (filters retrieval to avoid cross-product noise)
@@ -145,15 +207,31 @@ class BankRAGAssistant:
     # ──────────────────────────────────────────────────────────────────
     #  Retrieval — account-filtered + cross-encoder reranked
     # ──────────────────────────────────────────────────────────────────
-    def retrieve_context(self, query: str):
+    def retrieve_context(self, query: str, session_id: str = "default"):
         account = self._detect_account(query)
-        where   = {"sheet": account} if account else None
+        
+        # Hybrid Filter: Search detected account OR the uploaded document chunks for this session
+        where = None
+        if account:
+            where = {
+                "$or": [
+                    {"sheet": account},
+                    {"$and": [{"sheet": "Uploaded"}, {"session_id": session_id}]}
+                ]
+            }
+        else:
+            # No specific account detected, just search general + uploaded for this session
+            where = {"$or": [
+                {"sheet": {"$ne": "Uploaded"}}, # Search all official sheets
+                {"session_id": session_id}       # AND uploaded for this session
+            ]}
 
         try:
             results = self.collection.query(
-                query_texts=[query], n_results=10, where=where
+                query_texts=[query], n_results=16, where=where
             )
         except Exception:
+            # Fallback if complex filter fails
             results = self.collection.query(query_texts=[query], n_results=10)
 
         docs  = results["documents"][0]
@@ -165,60 +243,34 @@ class BankRAGAssistant:
         # Rerank with CrossEncoder
         scores = self.reranker.predict([[query, d] for d in docs])
         ranked = sorted(zip(scores, docs, metas), reverse=True)
-        top5   = ranked[:5]   # take only top 5 to keep context tight
+        top_n  = ranked[:10]   # Pass top 10 chunks to ensure values are found
 
-        context = "\n\n---\n\n".join(doc for _, doc, _ in top5)
-        # FIX 2: Return only top 3 for source display — context still uses all 5 for answer quality
-        return context, top5[:3]
+        context = "\n\n---\n\n".join(doc for _, doc, _ in top_n)
+        return context, top_n[:5]
 
     # ──────────────────────────────────────────────────────────────────
     #  System Prompt
     # ──────────────────────────────────────────────────────────────────
     def _build_system_prompt(self, context: str) -> str:
-        glossary = "\n".join(f'  "{k}": "{v}"' for k, v in PRODUCT_GLOSSARY.items())
         return (
-            "You are the NUST Bank Elite Advisor — a warm, knowledgeable assistant "
-            "for NUST Bank Pakistan. You always respond in well-formatted Markdown.\n\n"
+            "You are the NUST Bank Advisor. Professional, helpful, and concise.\n\n"
 
-            # FIX 4: Off-topic / non-banking scope — explicitly stated upfront
-            "### SCOPE:\n"
-            "You are STRICTLY a NUST Bank Pakistan financial assistant. "
-            "You ONLY answer questions about NUST Bank products, accounts, loans, profit rates, "
-            "eligibility, documents, fees, and related banking services.\n"
-            "If a user asks ANYTHING outside banking — language translation, general knowledge, "
-            "cooking, sports, Urdu/English translation, definitions, or any non-banking topic — "
-            "respond ONLY with: "
-            "'I'm NUST Bank's AI Assistant and can only help with banking-related queries. "
-            "Feel free to ask about our accounts, loans, or any other banking services!'\n"
-            "Do NOT attempt to answer non-banking questions even if they seem simple or harmless.\n\n"
-
-            "### PRODUCT GLOSSARY (expand abbreviations using this):\n"
-            "{\n" + glossary + "\n}\n\n"
-
-            "### RESPONSE FORMATTING RULES:\n"
-            "- Multiple features or items → use bullet points (- item)\n"
-            "- Comparing two variants → two labeled sections, each with bullets\n"
-
-            # FIX 3: Percentage display — raw DB values may be decimals like 0.19, always render as human %
-            "- Financial profit/interest rates: the bank records may store rates as decimals "
-            "(e.g. 0.19 means 19.00%, 0.1675 means 16.75%). "
-            "ALWAYS display rates in percentage form as a human would read them "
-            "(e.g. **19.00% per annum**), NEVER as a raw decimal like 0.19%.\n"
-
-            # FIX 1: Currency — always PKR, never INR
-            "- All monetary amounts are in Pakistani Rupees (PKR / Rs.). "
-            "NEVER refer to Indian Rupees or assume Indian currency. "
-            "Always write amounts as 'Rs. X' or 'PKR X' (e.g. Rs. 25,000).\n"
-
-            "- Single short fact → one clean sentence\n"
-            "- Use **bold** for section headers and key terms\n"
-            "- Start directly with the answer — no preamble like 'Based on the records...'\n"
-            "- NEVER make up information not in the bank records below\n"
-            "- If records don't contain the answer, say: "
-            "'I don't have that specific detail in our records. Please contact your nearest NUST Bank branch.'\n\n"
+            "### MANDATORY INSTRUCTIONS:\n"
+            "1. LANGUAGE: ALWAYS respond in English (British/Pakistani English). NEVER use Turkish, Urdu, or any other language.\n"
+            "2. SCOPE: Answer ONLY about NUST Bank (products, fees, rates, docs).\n"
+            "3. OFF-TOPIC: If the user asks about something else, say: 'I'm NUST Bank's AI Assistant and can only help with banking-related queries.'\n"
+            "4. NO HALLUCINATION: Only use the records provided below.\n"
+            "5. PERCENTAGES (CRITICAL): You MUST multiply decimals by 100 to show the correct rate. "
+            "If the record shows '0.19', your response MUST say '19.00%'. If it shows '0.08', you MUST say '8.00%'. "
+            "NEVER display raw decimals like '0.19%' or '0.08%'. Always use two decimal places (e.g., 17.50%).\n"
+            "6. CURRENCY: Always PKR (Rs.).\n\n"
 
             "### BANK RECORDS:\n"
-            f"{context if context else 'No specific records found. Answer from general banking knowledge only.'}"
+            "Examine exactly to find the correct figures (interest rates, limits, dates).\n"
+            f"{context if context else 'No specific records found. Answer from general knowledge only.'}\n\n"
+
+            "NOTE: Some records are 'OFFICIAL' while others are 'UPLOADED' by the user. "
+            "Stick to the specific account or document requested."
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -271,11 +323,19 @@ class BankRAGAssistant:
         CLI mode: chat()               → interactive terminal loop
         """
         if query is not None:
-            if not guardrails.is_query_safe(query):
+            # session_id logic if passed in query (for UI mode)
+            session_id = "default"
+            if isinstance(query, dict):
+                session_id = query.get("session_id", "default")
+                query_text = query.get("prompt", "")
+            else:
+                query_text = query
+
+            if not guardrails.is_query_safe(query_text):
                 return iter(["I specialize in NUST Bank financial services. How can I assist you today?"]), []
 
-            context, top_docs = self.retrieve_context(query)
-            return self.generate_answer_stream(query, history or [], context), top_docs
+            context, top_docs = self.retrieve_context(query_text, session_id=session_id)
+            return self.generate_answer_stream(query_text, history or [], context), top_docs
 
         # ── CLI / Terminal mode ───────────────────────────────────────
         print("=" * 60)
